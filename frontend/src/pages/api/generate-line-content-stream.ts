@@ -1,7 +1,7 @@
 import { NextApiRequest, NextApiResponse } from 'next';
 import { ContentGenerator } from './utils/content-generator';
 import { BlogScraper } from './utils/scraper';
-import { LineContentRequest } from '@/types';
+import { LineContentRequest, ScrapedContent } from '@/types';
 
 export default async function handler(
   req: NextApiRequest,
@@ -35,11 +35,13 @@ export default async function handler(
     const parsedData = JSON.parse(requestData) as LineContentRequest & {
       selected_images: string[];
       use_web_search: boolean;
+      scraped_content?: ScrapedContent; // スクレイピング済みデータが含まれる可能性
     };
     
     const {
       selected_images = [],
       use_web_search = true,
+      scraped_content: existingScrapedContent, // 既存のスクレイピングデータ
       ...lineRequest
     } = parsedData;
     
@@ -59,47 +61,74 @@ export default async function handler(
     // イベント: 開始通知
     res.write(`data: ${JSON.stringify({ 
       type: 'process_start', 
-      message: 'ブログ記事のスクレイピングを開始します' 
+      message: 'コンテンツ生成準備を開始します' 
     })}\n\n`);
     
-    // ブログ記事をスクレイピング
+    // スクレイピング済みデータがあれば使用し、なければスクレイピングを実行
     let scraped_content;
-    try {
-      const scraper = new BlogScraper(lineRequest.blog_url);
-      scraped_content = await scraper.scrape();
+    
+    if (existingScrapedContent && existingScrapedContent.title && existingScrapedContent.content) {
+      // スクレイピング済みデータを使用
+      scraped_content = existingScrapedContent;
       
-      // 十分なコンテンツがあるか確認
-      if (!scraped_content.content || scraped_content.content.length < 50) {
-        // デフォルトのコンテンツを追加
-        scraped_content.content = scraped_content.content || '記事の内容が十分に取得できませんでした。';
-        scraped_content.content += '\n\n' + lineRequest.blog_url + ' の記事を基に、LINE配信記事を作成します。';
-      }
-      
-      // スクレイピング結果を送信
+      // 既存データを使用している旨を送信
       res.write(`data: ${JSON.stringify({ 
         type: 'scraped_content', 
         data: {
           title: scraped_content.title,
           contentLength: scraped_content.content.length,
-          imageCount: scraped_content.images.length
+          imageCount: scraped_content.images.length,
+          fromCache: true
         }
       })}\n\n`);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : '不明なエラー';
-      
-      // スクレイピングエラーでもダミーデータで続行
-      console.log(`スクレイピングエラー、ダミーデータで続行: ${errorMessage}`);
-      scraped_content = {
-        title: lineRequest.blog_url.split('/').pop() || '記事タイトル',
-        content: '記事の内容を解析できませんでした。OpenAIのWeb検索機能を使用して、関連情報を検索します。',
-        images: selected_images.length > 0 ? selected_images : []
-      };
-      
-      // エラー情報を送信するが、プロセスは停止しない
+    } else {
+      // 新たにスクレイピングを実行
       res.write(`data: ${JSON.stringify({ 
-        type: 'scraping_warning', 
-        warning: `記事の詳細なスクレイピングに失敗しましたが、基本情報で処理を続行します: ${errorMessage}` 
+        type: 'process_start', 
+        message: 'ブログ記事のスクレイピングを開始します' 
       })}\n\n`);
+      
+      try {
+        const scraper = new BlogScraper(lineRequest.blog_url);
+        scraped_content = await scraper.scrape();
+        
+        // 十分なコンテンツがあるか確認
+        if (!scraped_content.content || scraped_content.content.length < 50) {
+          // デフォルトのコンテンツを追加
+          scraped_content.content = scraped_content.content || '記事の内容が十分に取得できませんでした。';
+          scraped_content.content += '\n\n' + lineRequest.blog_url + ' の記事を基に、LINE配信記事を作成します。';
+        }
+        
+        // 元のURLを保存（スクレイピングのリトライ防止のため）
+        scraped_content._originalUrl = lineRequest.blog_url;
+        
+        // スクレイピング結果を送信
+        res.write(`data: ${JSON.stringify({ 
+          type: 'scraped_content', 
+          data: {
+            title: scraped_content.title,
+            contentLength: scraped_content.content.length,
+            imageCount: scraped_content.images.length
+          }
+        })}\n\n`);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : '不明なエラー';
+        
+        // スクレイピングエラーでもダミーデータで続行
+        console.log(`スクレイピングエラー、ダミーデータで続行: ${errorMessage}`);
+        scraped_content = {
+          title: lineRequest.blog_url.split('/').pop() || '記事タイトル',
+          content: '記事の内容を解析できませんでした。OpenAIのWeb検索機能を使用して、関連情報を検索します。',
+          images: selected_images.length > 0 ? selected_images : [],
+          _originalUrl: lineRequest.blog_url
+        };
+        
+        // エラー情報を送信するが、プロセスは停止しない
+        res.write(`data: ${JSON.stringify({ 
+          type: 'scraping_warning', 
+          warning: `記事の詳細なスクレイピングに失敗しましたが、基本情報で処理を続行します: ${errorMessage}` 
+        })}\n\n`);
+      }
     }
     
     // バリエーション情報を送信

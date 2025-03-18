@@ -1,7 +1,7 @@
 import { NextApiRequest, NextApiResponse } from 'next';
 import { ContentGenerator } from './utils/content-generator';
 import { BlogScraper } from './utils/scraper';
-import { LineContentRequest, LineContentResponse } from '@/types';
+import { LineContentRequest, LineContentResponse, ScrapedContent } from '@/types';
 
 export default async function handler(
   req: NextApiRequest,
@@ -18,6 +18,7 @@ export default async function handler(
       selected_images: string[];
       use_web_search: boolean;
       stream: boolean; // ストリーミングモードを追加
+      scraped_content?: ScrapedContent; // 既にスクレイピングされたコンテンツ
     };
     
     // OpenAI API キーの取得（環境変数から）
@@ -30,19 +31,31 @@ export default async function handler(
       selected_images = [],
       use_web_search = true,
       stream = false, // デフォルトはfalse
+      scraped_content: existingScrapedContent, // 既存のスクレイピングデータ
       ...lineRequest
     } = requestData;
 
     console.log(`LINE記事生成開始: URL=${lineRequest.blog_url}, WebSearch=${use_web_search}, 画像数=${selected_images.length}, Stream=${stream}`);
     
-    // 元のブログ記事をスクレイピング
+    // スクレイピング済みデータがあれば使用し、なければ新たにスクレイピング
     let scraped_content;
-    try {
-      const scraper = new BlogScraper(lineRequest.blog_url);
-      scraped_content = await scraper.scrape();
-    } catch (error) {
-      console.error('スクレイピングエラー:', error);
-      return res.status(500).json({ detail: `記事のスクレイピングに失敗しました: ${error instanceof Error ? error.message : '不明なエラー'}` });
+    
+    if (existingScrapedContent && existingScrapedContent.title && existingScrapedContent.content) {
+      // 既存のスクレイピングデータを使用
+      console.log(`既存のスクレイピングデータを使用: タイトル=${existingScrapedContent.title.substring(0, 30)}...`);
+      scraped_content = existingScrapedContent;
+    } else {
+      // 元のブログ記事をスクレイピング
+      try {
+        const scraper = new BlogScraper(lineRequest.blog_url);
+        scraped_content = await scraper.scrape();
+        
+        // 元のURLを保存
+        scraped_content._originalUrl = lineRequest.blog_url;
+      } catch (error) {
+        console.error('スクレイピングエラー:', error);
+        return res.status(500).json({ detail: `記事のスクレイピングに失敗しました: ${error instanceof Error ? error.message : '不明なエラー'}` });
+      }
     }
     
     console.log(`スクレイピング完了: ${scraped_content.content.length} 文字, ${scraped_content.images.length} 画像`);
@@ -56,7 +69,8 @@ export default async function handler(
         requestData: JSON.stringify({
           ...lineRequest,
           selected_images,
-          use_web_search
+          use_web_search,
+          scraped_content // スクレイピング済みデータを含める
         })
       }).toString();
       

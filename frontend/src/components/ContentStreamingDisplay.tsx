@@ -99,11 +99,11 @@ const ContentStreamingDisplay: React.FC<ContentStreamingDisplayProps> = ({
       return newStates;
     });
     
-    // URL query parameters の作成
     const params = new URLSearchParams({
       requestData: JSON.stringify({
         ...apiRequest,
-        selected_images: selectedImages
+        selected_images: selectedImages,
+        scraped_content: scrapedContent // スクレイピング済みデータを含める
       }),
       variationIndex: index.toString()
     });

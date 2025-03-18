@@ -20,11 +20,11 @@ export interface LineContentRequest {
     reference_template?: string;
   }
   
-  // スクレイピングされたコンテンツの型定義
   export interface ScrapedContent {
     title: string;
     content: string;
     images: string[];
+    _originalUrl?: string; // 元のURLを保存するための追加フィールド
   }
   
   // 生成されたコンテンツの型定義

@@ -195,7 +195,7 @@ export default function Home() {
     }
   };
 
-  // ストリーミングコンテンツ生成
+  // ストリーミングコンテンツ生成 - スクレイピング済みデータを送信
   const handleStreamGenerate = async (formData: LineContentRequest) => {
     setState({ ...state, isLoading: true, error: null });
 
@@ -309,13 +309,11 @@ export default function Home() {
     if (activeStep === 1) {
       // 画像選択ステップから生成ステップへ
       if (state.scrapedContent) {
-        // フォームデータを作成
+        // フォームデータを作成 - 元のブログURLを使用
         const formData: LineContentRequest = {
           company_name: '株式会社サンプル',
           company_url: 'https://example.com',
-          blog_url: state.scrapedContent.images.length > 0 
-            ? state.scrapedContent.images[0].replace(/\/[^\/]+$/, '') // 画像URLからドメインを抽出
-            : 'https://example.com/blog',
+          blog_url: state.scrapedContent.title ? state.scrapedContent._originalUrl || state.scrapedContent.images[0]?.replace(/\/[^\/]+$/, '') || 'https://example.com/blog' : 'https://example.com/blog',
           redirect_text: '詳しく知りたい方は、下のリンクor画像をタップ👇✨',
           bracket_type: '【】',
           honorific: '様',
@@ -331,7 +329,7 @@ export default function Home() {
           greeting_text: '{name}さま　こんばんは！'
         };
         
-        // ストリーミングモードで生成を開始
+        // ストリーミングモードで生成を開始 - スクレイピングデータを一緒に送信
         handleStreamGenerate(formData);
       }
     } else if (activeStep === 2 && state.selectedOption) {
