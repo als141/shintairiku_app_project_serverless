@@ -120,6 +120,58 @@ export async function generateLineContent(
 }
 
 /**
+ * LINE配信記事を生成する (ストリーミングモード)
+ * @param request LINE配信記事の生成リクエスト
+ * @param selectedImages 選択された画像URL配列
+ * @param useWebSearch Web検索を使用するかどうか
+ * @returns ストリーミングAPIのURL
+ */
+export function getLineContentStreamUrl(
+  request: LineContentRequest,
+  selectedImages: string[] = [],
+  useWebSearch: boolean = true
+): string {
+  // リクエストデータをエンコード
+  const queryParams = new URLSearchParams({
+    requestData: JSON.stringify({
+      ...request,
+      selected_images: selectedImages,
+      use_web_search: useWebSearch
+    })
+  });
+  
+  // ストリーミングAPIのURLを返す
+  return `/api/generate-line-content-stream?${queryParams.toString()}`;
+}
+
+/**
+ * マークダウン形式の整形（画像やリンクを追加）
+ * @param content テキストコンテンツ
+ * @param selectedImages 選択された画像URL配列
+ * @param blogUrl ブログ記事のURL
+ * @returns マークダウンテキスト
+ */
+export function formatAsMarkdown(
+  content: string,
+  selectedImages: string[] = [],
+  blogUrl?: string
+): string {
+  let markdown = content;
+  
+  // 画像がある場合は追加
+  for (let i = 0; i < selectedImages.length; i++) {
+    markdown += `\n\n![記事画像 ${i+1}](${selectedImages[i]})`;
+  }
+  
+  // ブログURLがある場合は追加
+  if (blogUrl) {
+    markdown += `\n\n[詳細を見る](${blogUrl})`;
+  }
+  
+  return markdown;
+}
+
+/**
  * エラーメッセージをフォーマット
  */
 function formatError(error: unknown, defaultMessage: string): Error {

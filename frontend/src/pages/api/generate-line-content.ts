@@ -17,6 +17,7 @@ export default async function handler(
     const requestData = req.body as LineContentRequest & {
       selected_images: string[];
       use_web_search: boolean;
+      stream: boolean; // ストリーミングモードを追加
     };
     
     // OpenAI API キーの取得（環境変数から）
@@ -28,10 +29,11 @@ export default async function handler(
     const {
       selected_images = [],
       use_web_search = true,
+      stream = false, // デフォルトはfalse
       ...lineRequest
     } = requestData;
 
-    console.log(`LINE記事生成開始: URL=${lineRequest.blog_url}, WebSearch=${use_web_search}, 画像数=${selected_images.length}`);
+    console.log(`LINE記事生成開始: URL=${lineRequest.blog_url}, WebSearch=${use_web_search}, 画像数=${selected_images.length}, Stream=${stream}`);
     
     // 元のブログ記事をスクレイピング
     let scraped_content;
@@ -48,6 +50,20 @@ export default async function handler(
     // ContentGeneratorの初期化
     const contentGenerator = new ContentGenerator(openaiApiKey);
     
+    // ストリームモードの場合はストリーミング用エンドポイントへリダイレクト
+    if (stream) {
+      const queryParams = new URLSearchParams({
+        requestData: JSON.stringify({
+          ...lineRequest,
+          selected_images,
+          use_web_search
+        })
+      }).toString();
+      
+      return res.redirect(`/api/generate-line-content-stream?${queryParams}`);
+    }
+    
+    // 通常モード（非ストリーミング）
     // LINE配信コンテンツの生成（複数画像と Web検索機能を利用）
     const generated_options = await contentGenerator.generateLineContent(
       lineRequest,

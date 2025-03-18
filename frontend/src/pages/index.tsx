@@ -8,6 +8,7 @@ import MarkdownPreview from '@/components/MarkdownPreview';
 import ClientOnlyWrapper from '@/components/ClientOnlyWrapper';
 import ApiConnectionChecker from '@/components/ApiConnectionChecker';
 import ApiDebugTool from '@/components/ApiDebugTool';
+import ContentStreamingDisplay from '@/components/ContentStreamingDisplay';
 import { 
   LineContentRequest, 
   AppState, 
@@ -15,7 +16,7 @@ import {
   GeneratedContent,
   ImageToggleHandler 
 } from '@/types';
-import { scrapeBlogContent, generateLineContent, checkApiServer } from '@/lib/api';
+import { scrapeBlogContent, generateLineContent, checkApiServer, formatAsMarkdown } from '@/lib/api';
 
 // 開発環境かどうかの判定
 const isDevelopment = process.env.NODE_ENV === 'development';
@@ -24,9 +25,6 @@ export default function Home() {
   // クライアントサイドのみのレンダリングを制御
   const [isClient, setIsClient] = useState(false);
   const [apiConnected, setApiConnected] = useState<boolean | null>(null);
-  
-  // フォームデータを保持する状態を追加
-  const [formData, setFormData] = useState<LineContentRequest | null>(null);
   
   useEffect(() => {
     setIsClient(true);
@@ -56,8 +54,15 @@ export default function Home() {
     useWebSearch: true
   });
 
+  // ストリーミング状態の管理
+  const [streamingState, setStreamingState] = useState<{
+    isStreaming: boolean;
+  }>({
+    isStreaming: false
+  });
+
   const [activeStep, setActiveStep] = useState(0);
-  const [notification, setNotification] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' | 'warning' }>({
+  const [notification, setNotification] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' }>({
     open: false,
     message: '',
     severity: 'success'
@@ -79,15 +84,12 @@ export default function Home() {
 
   const handleFormSubmit = async (data: LineContentRequest, useWebSearch: boolean) => {
     setState({ ...state, isLoading: true, error: null });
-    
-    // フォームデータを保存
-    setFormData(data);
 
     try {
       // API接続確認
       const connected = await checkApiServer();
       if (!connected) {
-        throw new Error('バックエンドサーバーに接続できません。サーバーが起動しているか確認してください。');
+        throw new Error('APIサーバーに接続できません。サーバーが起動しているか確認してください。');
       }
       
       // まず元のブログ記事をスクレイピング
@@ -135,21 +137,22 @@ export default function Home() {
     });
   };
 
-  const handleGenerateContent = async () => {
-    // フォームデータが存在することを確認
-    if (!formData) {
-      setNotification({
-        open: true,
-        message: 'フォームデータが見つかりません。最初からやり直してください。',
-        severity: 'error'
-      });
-      setActiveStep(0);
-      return;
-    }
-    
+  // 通常のコンテンツ生成処理
+  const handleGenerateContent = async (formData: LineContentRequest) => {
     setState({ ...state, isLoading: true, error: null });
 
     try {
+      // ダミーURL警告（サンプル画面での画像エラー対策）
+      if (formData.blog_url === 'https://example.com/blog' || formData.blog_url === 'https://example.com') {
+        setNotification({
+          open: true,
+          message: 'サンプルURLではなく、実際のブログURLを入力してください',
+          severity: 'info'
+        });
+        setState({ ...state, isLoading: false });
+        return;
+      }
+
       // LINE配信記事を生成（Web検索機能と複数画像を設定に応じて使用）
       const response = await generateLineContent(
         formData, 
@@ -192,6 +195,98 @@ export default function Home() {
     }
   };
 
+  // ストリーミングコンテンツ生成
+  const handleStreamGenerate = async (formData: LineContentRequest) => {
+    setState({ ...state, isLoading: true, error: null });
+
+    try {
+      // ダミーURL警告
+      if (formData.blog_url === 'https://example.com/blog' || formData.blog_url === 'https://example.com') {
+        setNotification({
+          open: true,
+          message: 'サンプルURLではなく、実際のブログURLを入力してください',
+          severity: 'info'
+        });
+        setState({ ...state, isLoading: false });
+        return;
+      }
+      
+      // ストリーミングを開始
+      setStreamingState({
+        isStreaming: true
+      });
+      
+      setNotification({
+        open: true,
+        message: 'リアルタイム記事生成を開始しました',
+        severity: 'info'
+      });
+      
+      setState({ ...state, isLoading: false });
+    } catch (error) {
+      setState({
+        ...state,
+        isLoading: false,
+        error: error instanceof Error ? error.message : '不明なエラーが発生しました'
+      });
+      
+      setNotification({
+        open: true,
+        message: 'ストリーミング開始時にエラーが発生しました',
+        severity: 'error'
+      });
+    }
+  };
+
+  // ストリーミング完了時の処理
+  const handleStreamComplete = (variations: GeneratedContent[]) => {
+    setStreamingState({
+      isStreaming: false
+    });
+    
+    // 完成したコンテンツバリエーションを使用
+    if (variations && variations.length > 0) {
+      setState({
+        ...state,
+        generatedOptions: variations,
+        selectedOption: variations[0] // 最初のバリエーションを選択
+      });
+      
+      setNotification({
+        open: true,
+        message: `${variations.length}つのコンテンツバリエーションが正常に生成されました`,
+        severity: 'success'
+      });
+      
+      // 選択ステップに移動
+      setActiveStep(2);
+    } else {
+      setNotification({
+        open: true,
+        message: 'コンテンツの生成に失敗しました',
+        severity: 'error'
+      });
+    }
+  };
+
+  // ストリーミングエラー時の処理
+  const handleStreamError = (error: string) => {
+    setStreamingState({
+      isStreaming: false
+    });
+    
+    setState({
+      ...state,
+      error: error
+    });
+    
+    setNotification({
+      open: true,
+      message: `ストリーミングエラー: ${error}`,
+      severity: 'error'
+    });
+  };
+
   const handleContentSelect = (content: GeneratedContent) => {
     setState({
       ...state,
@@ -212,8 +307,33 @@ export default function Home() {
 
   const handleNext = () => {
     if (activeStep === 1) {
-      // 画像選択ステップから生成ステップへ - 自動的に記事生成を開始
-      handleGenerateContent();
+      // 画像選択ステップから生成ステップへ
+      if (state.scrapedContent) {
+        // フォームデータを作成
+        const formData: LineContentRequest = {
+          company_name: '株式会社サンプル',
+          company_url: 'https://example.com',
+          blog_url: state.scrapedContent.images.length > 0 
+            ? state.scrapedContent.images[0].replace(/\/[^\/]+$/, '') // 画像URLからドメインを抽出
+            : 'https://example.com/blog',
+          redirect_text: '詳しく知りたい方は、下のリンクor画像をタップ👇✨',
+          bracket_type: '【】',
+          honorific: '様',
+          child_honorific: 'お子様',
+          add_emotional_intro: true,
+          writing_style: 'カジュアル',
+          line_break_style: '読みやすさ重視',
+          content_length: '200文字前後',
+          date_format: 'MM月DD日(ddd), HH:MM',
+          bullet_point: '🟧',
+          emoji_types: '🏡✨👇🎉😊💁‍♂️🎁🌱🌿',
+          emoji_count: '4~5',
+          greeting_text: '{name}さま　こんばんは！'
+        };
+        
+        // ストリーミングモードで生成を開始
+        handleStreamGenerate(formData);
+      }
     } else if (activeStep === 2 && state.selectedOption) {
       // コンテンツ選択ステップから確認ステップへ
       handleConfirmContent();
@@ -235,7 +355,6 @@ export default function Home() {
       generatedOptions: [],
       selectedOption: null
     });
-    setFormData(null);
   };
 
   // サーバー側レンダリング時のフォールバック表示
@@ -275,6 +394,21 @@ export default function Home() {
           ))}
         </Stepper>
       </Box>
+
+      {/* リアルタイムストリーミング表示 */}
+      {streamingState.isStreaming && (
+        <ContentStreamingDisplay
+          isStreaming={streamingState.isStreaming}
+          onStreamComplete={handleStreamComplete}
+          onStreamError={handleStreamError}
+          scrapedContent={state.scrapedContent}
+          selectedImages={state.selectedImages}
+          apiRequest={{
+            blog_url: state.scrapedContent?.images[0]?.replace(/\/[^\/]+$/, '') || 'https://example.com/blog',
+            use_web_search: state.useWebSearch
+          }}
+        />
+      )}
 
       {activeStep === 0 && (
         <ClientOnlyWrapper>
@@ -341,18 +475,10 @@ export default function Home() {
             <Button 
               variant="contained" 
               onClick={handleNext}
-              disabled={state.isLoading}
             >
-              {state.isLoading ? (
-                <>
-                  <CircularProgress size={24} sx={{ mr: 1 }} />
-                  生成中...
-                </>
-              ) : (
-                state.selectedImages.length > 0 
-                  ? `${state.selectedImages.length}枚の画像を選択して次へ` 
-                  : '画像なしで次へ'
-              )}
+              {state.selectedImages.length > 0 
+                ? `${state.selectedImages.length}枚の画像を選択して次へ` 
+                : '画像なしで次へ'}
             </Button>
           </Box>
         </ClientOnlyWrapper>

@@ -2,6 +2,11 @@ import OpenAI from 'openai';
 import { LineContentRequest, ScrapedContent, GeneratedContent } from '@/types';
 import { WebSearchClient } from './web-search';
 
+// WebSearchToolの型を定義
+type WebSearchTool = {
+  type: "web_search_preview";
+};
+
 export class ContentGenerator {
   private openai: OpenAI;
   private webSearchClient: WebSearchClient;
@@ -52,21 +57,38 @@ export class ContentGenerator {
     
     try {
       for (let i = 0; i < 3; i++) {
-        // OpenAI API を呼び出してコンテンツを生成
-        const response = await this.openai.chat.completions.create({
+        // OpenAI Responses API を使用
+        const tools: WebSearchTool[] = use_web_search ? [{ type: "web_search_preview" }] : [];
+        
+        const response = await this.openai.responses.create({
           model: "gpt-4o",
-          messages: [
-            { role: "system", content: prompt },
-            { role: "user", content: `LINE配信記事のバリエーション${i+1}を生成してください。` }
-          ],
-          max_tokens: 800,
+          instructions: prompt,
+          input: `LINE配信記事のバリエーション${i+1}を生成してください。バリエーション${i+1}は、他のバリエーションとは異なる表現や構成にしてください。`,
+          tools: tools,
+          max_output_tokens: 800,
           temperature: 0.7 + (i * 0.1), // バリエーションごとに少し変化をつける
-          top_p: 0.95,
-          frequency_penalty: 0.0,
-          presence_penalty: 0.0
+          top_p: 0.95
         });
         
-        const content = response.choices[0].message.content || "";
+        // レスポンスからテキストを抽出
+        let content = "";
+        for (const item of response.output) {
+          if (item.type === "message" && item.role === "assistant") {
+            for (const contentPart of item.content) {
+              if (contentPart.type === "output_text") {
+                content = contentPart.text;
+                break;
+              }
+            }
+          }
+        }
+        
+        if (content.trim().length === 0) {
+          // コンテンツが空の場合はスキップ
+          console.warn(`バリエーション${i+1}のコンテンツが空でした。再試行します。`);
+          i--; // 同じインデックスを再試行
+          continue;
+        }
         
         // マークダウン形式の整形（複数画像対応）
         const markdown = this._formatAsMarkdown(content, selected_images, request.blog_url);
@@ -75,6 +97,8 @@ export class ContentGenerator {
           content,
           markdown
         });
+        
+        console.log(`バリエーション${i+1}を生成しました（${content.length}文字）`);
       }
     } catch (error) {
       console.error(`コンテンツ生成中にエラーが発生しました: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -82,6 +106,155 @@ export class ContentGenerator {
     }
     
     return variations;
+  }
+
+  // ストリーミング対応のコンテンツ生成関数
+  async *generateLineContentStream(
+    request: LineContentRequest,
+    scraped_content: ScrapedContent,
+    selected_images: string[] = [],
+    use_web_search: boolean = true,
+    variationIndex: number = 0 // どのバリエーションを生成するか
+  ): AsyncGenerator<any, void, unknown> {
+    // Web検索情報の取得
+    let web_search_info = {};
+    if (use_web_search) {
+      try {
+        const topic = scraped_content.title;
+        web_search_info = await this.webSearchClient.enhanceContentWithWebSearch(request, topic);
+        console.log(`Web検索結果を取得しました: ${(web_search_info as any).search_results?.summary?.substring(0, 100)}...`);
+        
+        // Web検索情報の通知イベント
+        yield {
+          type: 'web_search_complete',
+          message: 'Web検索が完了しました'
+        };
+      } catch (error) {
+        console.warn(`Web検索中にエラーが発生しましたが、プロセスは続行します: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        
+        // Web検索エラーの通知
+        yield {
+          type: 'web_search_error',
+          error: error instanceof Error ? error.message : 'Unknown error'
+        };
+      }
+    }
+    
+    // プロンプトを構築
+    const prompt = this._buildPrompt(request, scraped_content, selected_images, web_search_info);
+    
+    // ツール設定 - 型を明示的に指定
+    const tools: WebSearchTool[] = use_web_search ? [{ type: "web_search_preview" }] : [];
+    
+    try {
+      // バリエーション情報の通知
+      yield {
+        type: 'variation_info',
+        index: variationIndex,
+        total: 3,
+        message: `バリエーション ${variationIndex + 1}/3 を生成中...`
+      };
+      
+      // ストリーミングモードで生成
+      const response = await this.openai.responses.create({
+        model: "gpt-4o",
+        instructions: prompt,
+        input: `LINE配信記事のバリエーション${variationIndex + 1}を生成してください。バリエーション${variationIndex + 1}は、他のバリエーションとは異なる表現や構成で作成します。`,
+        tools: tools,
+        temperature: 0.7 + (variationIndex * 0.1), // バリエーションごとに少し変化をつける
+        top_p: 0.95,
+        stream: true
+      });
+      
+      // ストリームイベントを直接yield
+      for await (const event of response) {
+        yield event;
+      }
+      
+      // 完了通知
+      yield {
+        type: 'variation_complete',
+        index: variationIndex,
+        message: `バリエーション ${variationIndex + 1} の生成が完了しました`
+      };
+    } catch (error) {
+      console.error(`ストリーミング生成中にエラーが発生しました: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(`OpenAI APIでのストリーミング生成に失敗しました: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+  
+  // 3つのバリエーションをストリーミングで生成
+  async generateAllVariationsWithStreaming(
+    request: LineContentRequest,
+    scraped_content: ScrapedContent,
+    selected_images: string[] = [],
+    use_web_search: boolean = true,
+    onProgress: (content: string, index: number) => void,
+    onComplete: (variations: GeneratedContent[]) => void,
+    onError: (error: string) => void
+  ): Promise<void> {
+    console.log('全バリエーションの生成を開始します');
+    
+    const variations: GeneratedContent[] = [];
+    
+    try {
+      // 3つのバリエーションを順番に生成
+      for (let i = 0; i < 3; i++) {
+        console.log(`バリエーション ${i + 1} の生成を開始します`);
+        
+        let accumulatedText = '';
+        
+        // ストリーミング生成を実行
+        const streamGenerator = this.generateLineContentStream(
+          request,
+          scraped_content,
+          selected_images,
+          use_web_search,
+          i
+        );
+        
+        for await (const event of streamGenerator) {
+          // テキストデルタの場合、コンテンツを蓄積
+          if (event.type === 'response.output_text.delta') {
+            accumulatedText += event.delta;
+            onProgress(accumulatedText, i);
+          }
+        }
+        
+        // 完成したコンテンツがある場合、バリエーションに追加
+        if (accumulatedText.trim().length > 0) {
+          const markdown = this._formatAsMarkdown(accumulatedText, selected_images, request.blog_url);
+          
+          variations.push({
+            content: accumulatedText,
+            markdown
+          });
+          
+          console.log(`バリエーション ${i + 1} を生成完了しました (${accumulatedText.length} 文字)`);
+        } else {
+          console.warn(`バリエーション ${i + 1} の生成に失敗しました: コンテンツが空です`);
+          
+          // 失敗したバリエーションの代わりにデフォルトの内容を生成
+          const defaultContent = `LINE配信記事 ${i + 1}\n\n` +
+            `${scraped_content.title}に関する情報をお届けします。\n\n` +
+            `詳しくは元記事をご覧ください！`;
+          
+          const markdown = this._formatAsMarkdown(defaultContent, selected_images, request.blog_url);
+          
+          variations.push({
+            content: defaultContent,
+            markdown
+          });
+        }
+      }
+      
+      // すべてのバリエーション生成が完了
+      console.log(`全 ${variations.length} バリエーションの生成が完了しました`);
+      onComplete(variations);
+    } catch (error) {
+      console.error(`バリエーション生成中にエラーが発生しました: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      onError(error instanceof Error ? error.message : 'Unknown error');
+    }
   }
   
   private _buildPrompt(
